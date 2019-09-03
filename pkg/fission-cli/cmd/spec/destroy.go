@@ -36,7 +36,7 @@ func Destroy(flags cli.Input) error {
 }
 
 func (opts *DestroySubCommand) do(flags cli.Input) error {
-	return nil
+	return opts.run(flags)
 }
 
 func (opts *DestroySubCommand) run(flags cli.Input) error {
