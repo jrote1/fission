@@ -18,6 +18,7 @@ package spec
 
 import (
 	"fmt"
+	"github.com/fission/fission/pkg/fission-cli/cmd"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,13 +27,12 @@ import (
 	"github.com/ghodss/yaml"
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
-	"github.com/urfave/cli"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	fv1 "github.com/fission/fission/pkg/apis/fission.io/v1"
+	"github.com/fission/fission/pkg/fission-cli/cliwrapper/cli"
 	"github.com/fission/fission/pkg/fission-cli/log"
-	"github.com/fission/fission/pkg/fission-cli/util"
 	"github.com/fission/fission/pkg/generator/encoder"
 	v1generator "github.com/fission/fission/pkg/generator/v1"
 )
@@ -296,7 +296,7 @@ func (fr *FissionResources) validateFunctionReference(functions map[string]bool,
 	return nil
 }
 
-func (fr *FissionResources) Validate(c *cli.Context) error {
+func (fr *FissionResources) Validate(flags cli.Input) error {
 	var result *multierror.Error
 
 	// check references: both dangling refs + garbage
@@ -398,7 +398,7 @@ func (fr *FissionResources) Validate(c *cli.Context) error {
 			packages[MapKey(pkgMeta)] = true
 		}
 
-		client := util.GetApiClient(c.GlobalString("server"))
+		client := cmd.GetServer(flags)
 		for _, cm := range f.Spec.ConfigMaps {
 			_, err := client.ConfigMapGet(&metav1.ObjectMeta{
 				Name:      cm.Name,

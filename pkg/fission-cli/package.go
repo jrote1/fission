@@ -19,12 +19,8 @@ package fission_cli
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -45,11 +41,10 @@ import (
 	"github.com/fission/fission/pkg/controller/client"
 	"github.com/fission/fission/pkg/fission-cli/cliwrapper/driver/urfavecli"
 	cmdutils "github.com/fission/fission/pkg/fission-cli/cmd"
+	_package "github.com/fission/fission/pkg/fission-cli/cmd/package"
 	"github.com/fission/fission/pkg/fission-cli/cmd/spec"
 	"github.com/fission/fission/pkg/fission-cli/log"
 	"github.com/fission/fission/pkg/fission-cli/util"
-	storageSvcClient "github.com/fission/fission/pkg/storagesvc/client"
-	"github.com/fission/fission/pkg/types"
 )
 
 func getFunctionsByPackage(client *client.Client, pkgName, pkgNamespace string) ([]fv1.Function, error) {
@@ -75,7 +70,7 @@ func downloadStoragesvcURL(client *client.Client, fileUrl string) io.ReadCloser 
 
 	// replace in-cluster storage service host with controller server url
 	fileDownloadUrl := strings.TrimSuffix(client.Url, "/") + "/proxy/storage/" + u.RequestURI()
-	reader, err := downloadURL(fileDownloadUrl)
+	reader, err := _package.DownloadURL(fileDownloadUrl)
 
 	util.CheckErr(err, fmt.Sprintf("download from storage service url: %v", fileUrl))
 	return reader
@@ -249,7 +244,7 @@ func pkgSourceGet(c *cli.Context) error {
 	}
 
 	if len(output) > 0 {
-		return writeArchiveToFile(output, reader)
+		return _package.WriteArchiveToFile(output, reader)
 	} else {
 		_, err := io.Copy(os.Stdout, reader)
 		return err
@@ -286,7 +281,7 @@ func pkgDeployGet(c *cli.Context) error {
 	}
 
 	if len(output) > 0 {
-		return writeArchiveToFile(output, reader)
+		return _package.WriteArchiveToFile(output, reader)
 	} else {
 		_, err := io.Copy(os.Stdout, reader)
 		return err
@@ -457,31 +452,6 @@ func pkgRebuild(c *cli.Context) error {
 	return nil
 }
 
-func fileSize(filePath string) int64 {
-	info, err := os.Stat(filePath)
-	util.CheckErr(err, fmt.Sprintf("stat %v", filePath))
-	return info.Size()
-}
-
-func fileChecksum(fileName string) (*fv1.Checksum, error) {
-	f, err := os.Open(fileName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file %v: %v", fileName, err)
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	_, err = io.Copy(h, f)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate checksum for %v", fileName)
-	}
-
-	return &fv1.Checksum{
-		Type: fv1.ChecksumTypeSHA256,
-		Sum:  hex.EncodeToString(h.Sum(nil)),
-	}, nil
-}
-
 // Return a fv1.Archive made from an archive .  If specFile, then
 // create an archive upload spec in the specs directory; otherwise
 // upload the archive using client.  noZip avoids zipping the
@@ -520,7 +490,7 @@ func createArchive(client *client.Client, includeFiles []string, noZip bool, spe
 		}
 
 		// check if this AUS exists in the specs; if so, don't create a new one
-		fr, err := readSpecs(specDir)
+		fr, err := spec.ReadSpecs(specDir)
 		util.CheckErr(err, "read specs")
 		if m := fr.SpecExists(aus, false, true); m != nil {
 			fmt.Printf("Re-using previously created archive %v\n", m.Name)
@@ -542,46 +512,7 @@ func createArchive(client *client.Client, includeFiles []string, noZip bool, spe
 	archivePath := makeArchiveFileIfNeeded("", includeFiles, noZip)
 
 	ctx := context.Background()
-	return uploadArchive(ctx, client, archivePath)
-}
-
-func uploadArchive(ctx context.Context, client *client.Client, fileName string) *fv1.Archive {
-	var archive fv1.Archive
-
-	// If filename is a URL, download it first
-	if strings.HasPrefix(fileName, "http://") || strings.HasPrefix(fileName, "https://") {
-		fileName = downloadToTempFile(fileName)
-	}
-
-	if fileSize(fileName) < types.ArchiveLiteralSizeLimit {
-		archive.Type = fv1.ArchiveTypeLiteral
-		archive.Literal = getContents(fileName)
-	} else {
-		u := strings.TrimSuffix(client.Url, "/") + "/proxy/storage"
-		ssClient := storageSvcClient.MakeClient(u)
-
-		// TODO add a progress bar
-		id, err := ssClient.Upload(ctx, fileName, nil)
-		util.CheckErr(err, fmt.Sprintf("upload file %v", fileName))
-
-		storageSvc, err := client.GetSvcURL("application=fission-storage")
-		storageSvcURL := "http://" + storageSvc
-		util.CheckErr(err, "get fission storage service name")
-
-		// We make a new client with actual URL of Storage service so that the URL is not
-		// pointing to 127.0.0.1 i.e. proxy. DON'T reuse previous ssClient
-		pkgClient := storageSvcClient.MakeClient(storageSvcURL)
-		archiveURL := pkgClient.GetUrl(id)
-
-		archive.Type = fv1.ArchiveTypeUrl
-		archive.URL = archiveURL
-
-		csum, err := fileChecksum(fileName)
-		util.CheckErr(err, fmt.Sprintf("calculate checksum for file %v", fileName))
-
-		archive.Checksum = *csum
-	}
-	return &archive
+	return _package.UploadArchive(ctx, client, archivePath)
 }
 
 func createPackage(c *cli.Context, client *client.Client, pkgNamespace string, envName string, envNamespace string, srcArchiveFiles []string, deployArchiveFiles []string, buildcmd string, specDir string, specFile string, noZip bool) *metav1.ObjectMeta {
@@ -627,7 +558,7 @@ func createPackage(c *cli.Context, client *client.Client, pkgNamespace string, e
 
 	if len(specFile) > 0 {
 		// if a package sith the same spec exists, don't create a new spec file
-		fr, err := readSpecs(cmdutils.GetSpecDir(urfavecli.Parse(c)))
+		fr, err := spec.ReadSpecs(cmdutils.GetSpecDir(urfavecli.Parse(c)))
 		util.CheckErr(err, "read specs")
 		if m := fr.SpecExists(pkg, false, true); m != nil {
 			fmt.Printf("Re-using previously created package %v\n", m.Name)
@@ -643,76 +574,6 @@ func createPackage(c *cli.Context, client *client.Client, pkgNamespace string, e
 		fmt.Printf("Package '%v' created\n", pkgMetadata.GetName())
 		return pkgMetadata
 	}
-}
-
-func getContents(filePath string) []byte {
-	var code []byte
-	var err error
-
-	code, err = ioutil.ReadFile(filePath)
-	util.CheckErr(err, fmt.Sprintf("read %v", filePath))
-	return code
-}
-
-func writeArchiveToFile(fileName string, reader io.Reader) error {
-	tmpDir, err := utils.GetTempDir()
-	if err != nil {
-		return err
-	}
-
-	path := filepath.Join(tmpDir, fileName+".tmp")
-	w, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(w, reader)
-	if err != nil {
-		return err
-	}
-	err = os.Chmod(path, 0644)
-	if err != nil {
-		return err
-	}
-
-	err = os.Rename(path, fileName)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// downloadToTempFile fetches archive file from arbitrary url
-// and write it to temp file for further usage
-func downloadToTempFile(fileUrl string) string {
-	reader, err := downloadURL(fileUrl)
-	util.CheckErr(err, fmt.Sprintf("download from url: %v", fileUrl))
-	defer reader.Close()
-
-	tmpDir, err := utils.GetTempDir()
-	util.CheckErr(err, "create temp directory")
-
-	tmpFilename := uuid.NewV4().String()
-	destination := filepath.Join(tmpDir, tmpFilename)
-	err = os.Mkdir(tmpDir, 0744)
-	util.CheckErr(err, "create temp directory")
-
-	err = writeArchiveToFile(destination, reader)
-	util.CheckErr(err, "write archive to file")
-
-	return destination
-}
-
-// downloadURL downloads file from given url
-func downloadURL(fileUrl string) (io.ReadCloser, error) {
-	resp, err := http.Get(fileUrl)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%v - HTTP response returned non 200 status", resp.StatusCode)
-	}
-	return resp.Body, nil
 }
 
 // Create an archive from the given list of input files, unless that
